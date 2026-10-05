@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Dict, List
+
+from .data_model import LevelData, LevelObject
+
+
+class BatmanReturnsROMParser:
+    """Utility parser for extracting level blocks from a Game Gear ROM dump."""
+
+    def __init__(self, rom_path: str | Path):
+        self.rom_path = Path(rom_path)
+        self.rom_bytes = self.rom_path.read_bytes()
+
+    def scan_candidate_level_offsets(self, signature: bytes = b"BATM") -> List[int]:
+        """Very basic scan for probable ROM areas containing a level marker.
+
+        Exact Batman Returns format is not hardcoded here, so this is a general-purpose
+        reverse-engineering probe that can be expanded once the real ROM offsets are known.
+        """
+        offsets: List[int] = []
+        window = len(self.rom_bytes) - len(signature)
+        for idx in range(window):
+            if self.rom_bytes[idx : idx + len(signature)] == signature:
+                offsets.append(idx)
+        return offsets
+
+    def build_level_from_offset(
+        self,
+        offset: int,
+        width: int = 16,
+        height: int = 12,
+        name: str = "level_0",
+    ) -> LevelData:
+        payload = self.rom_bytes[offset:]
+
+        if len(payload) < width * height:
+            raise ValueError(
+                f"Not enough bytes for a {width}x{height} level at offset 0x{offset:x}."
+            )
+
+        tiles: List[List[int]] = []
+        index = 0
+        for _ in range(height):
+            row = []
+            for _ in range(width):
+                row.append(int.from_bytes(payload[index : index + 1], "little"))
+                index += 1
+            tiles.append(row)
+
+        level = LevelData(
+            name=name,
+            width=width,
+            height=height,
+            tiles=tiles,
+            objects=[],
+            palette=[0, 1, 2, 3],
+            checksum=self._checksum(tiles),
+        )
+        return level
+
+    def export_level(self, offset: int, out_path: str | Path, width: int = 16, height: int = 12, name: str = "level_0") -> Path:
+        level = self.build_level_from_offset(offset, width=width, height=height, name=name)
+        out = Path(out_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(level.to_dict(), indent=2), encoding="utf-8")
+        return out
+
+    @staticmethod
+    def _checksum(tiles: List[List[int]]) -> int:
+        total = 0
+        for row in tiles:
+            for value in row:
+                total += value
+        return total
+
+
+def build_level_from_bytes(
+    payload: bytes,
+    width: int = 16,
+    height: int = 12,
+    name: str = "level_0",
+) -> LevelData:
+    if len(payload) < width * height:
+        raise ValueError(f"Payload too short for {width}x{height} level data.")
+
+    tiles: List[List[int]] = []
+    index = 0
+    for _ in range(height):
+        row = []
+        for _ in range(width):
+            row.append(payload[index])
+            index += 1
+        tiles.append(row)
+
+    return LevelData(
+        name=name,
+        width=width,
+        height=height,
+        tiles=tiles,
+        objects=[
+            LevelObject(x=3, y=5, type="enemy", subtype="guard", flags=0),
+        ],
+        palette=[0, 1, 2, 3],
+        checksum=sum(value for row in tiles for value in row),
+    )
